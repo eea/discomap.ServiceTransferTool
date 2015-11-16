@@ -14,9 +14,9 @@ ArcGis tool is placed in the toolbox called “TransferServices”. There is loc
 
 Functionality
 The script uses twelve parameters. Only one of them is optional:
- [1] Input Server Name (string)
+[1] Input Server Name (string)
 The host name of the origin server. Typically a single name or fully qualified server, such as myServer.esri.com
- [2] Input Server Port (string)
+[2] Input Server Port (string)
 The port number for the origin ArcGIS Server. Typically this is 6080. If you have a web adapter installed with your GIS Server and have the REST Admin enabled you can connect using the web servers port number.
 [3] Input Server User (long)
 Administrative username.
@@ -32,9 +32,9 @@ The host name of the end server. Typically a single name or fully qualified serv
 The port number for the final ArcGIS Server. Typically this is 6080. If you have a web adapter installed with your GIS Server and have the REST Admin enabled you can connect using the web servers port number.
 [9] Output Server User (string)
 Administrative username.
- [10] Output Server Password (string)
+[10] Output Server Password (string)
 Administrative password.
- [11] (optional) Folder (string)
+[11] (optional) Folder (string)
 A destination folder different from the original/s one/s can be introduced.
 [12] sysTemp (string)
 A folder where the services sources are going to be stored.
