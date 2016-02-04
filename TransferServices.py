@@ -6,10 +6,11 @@ import errno
 import string
 import datetime, time
 import xml.dom.minidom as DOM
+import pymssql
 import socket
 import tempfile
 import getpass
-
+import zipfile
 
 longErrorGlobal = False   
 
@@ -79,7 +80,8 @@ def createFolder(server, port, adminUser, adminPass, folderName, folderDescripti
     If a token exists, you can pass one in for use.  
     '''    
     # Get and set the token
-    token = gentoken(server, port, adminUser, adminPass)    
+    if token is None:
+        token = gentoken(server, port, adminUser, adminPass)    
         
     folderProp_dict = {"folderName": folderName,"description": folderDescription}
     
@@ -151,6 +153,7 @@ def numberOfServices(server, port, adminUser, adminPass, serviceType):
     
     #Count all the services of "MapServer" type in a server
     number = 0
+
     token = gentoken(server, port, adminUser, adminPass)    
     services = []    
     baseUrl = "http://{}:{}/arcgis/admin/services".format(server, port)
@@ -210,6 +213,56 @@ def copy(src, dest):
             return True
     except:
         longErrorGlobal = True
+        return False
+
+def createZipFile(folder_path, output_path):
+    """Zip the contents of an entire folder (with that folder included
+    in the archive). Empty subfolders will be included in the archive
+    as well.
+    """
+    parent_folder = os.path.dirname(folder_path)
+    
+    # Retrieve the paths of the folder contents.
+    contents = os.walk(folder_path)
+    try:
+        zip_file = zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED)
+        for root, folders, files in contents:
+            # Include all subfolders, including empty ones.
+            for folder_name in folders:
+                absolute_path = os.path.join(root, folder_name)
+                relative_path = absolute_path.replace(parent_folder + '\\','')
+                zip_file.write(absolute_path, relative_path)
+                
+            for file_name in files:
+                absolute_path = os.path.join(root, file_name)
+                relative_path = absolute_path.replace(parent_folder + '\\','')
+                zip_file.write(absolute_path, relative_path)
+
+
+        zip_file.close()
+        return True
+    
+    except IOError, message:
+        zip_file.close()
+        
+        os.remove(output_path)
+        return False
+    except OSError, message:
+        zip_file.close()
+        
+        os.remove(output_path)
+        return False
+    except zipfile.BadZipfile, message:
+        zip_file.close()
+        
+        os.remove(output_path)
+        return False
+    
+    except:
+        arcpy.AddMessage('long')
+        zip_file.close()        
+        arcpy.AddMessage('     The source can not be copied because the path is extremely long.')
+        os.remove(output_path)
         return False
     
 
@@ -475,9 +528,27 @@ def createTxtFile(fileName, content):
     except IOError:
         pass
 
+    
+def writeInDatabase(fromServerName, toServerName, serviceType, finalService, initialService, user, sources, errorText):
 
+    #connect to SQL Server instance
+    conn = pymssql.connect(host='tetrasql.eea.dmz1', user='gis', password='tmggis', database='ArcGisStatistics')
+
+    #commits every transaction automatically and setup cursor
+    conn.autocommit(True)
+    cur = conn.cursor()
+    
+    try:        
+        cur.execute("INSERT INTO WebServicesMigration VALUES ('"+ fromServerName +"','"+ initialService +"','"+ toServerName +"','"+ finalService  +"','"+ serviceType +"','" + user + "','" + socket.gethostname() + "','" + sources + "', CURRENT_TIMESTAMP,'" + errorText + "')")
+        conn.commit()
+    except:
+        print "Could not INSERT"
+            
+    conn.close()
+ 
   
-def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder, token=None):
+def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder,
+                        overwrite, workFolder, token=None):
     serviceSuccesNumber = 0
     serviceFailureNumber = 0
     sources = ""
@@ -513,7 +584,6 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
 
                 # Deserialize response into Python object
                 propInitialService = json.loads(data)
-
                 user = getpass.getuser()
 
                 pathInitial = propInitialService["properties"]["filePath"]
@@ -533,7 +603,6 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                     temp_workspace = string.replace(workspace, ':', '', 1)
                     temp_workspace = string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1)
                     sources = os.path.join(temp_workspace, os.path.join(folderName, simpleServiceName + ".MapServer"))
-
                 else:
                     finalServiceName = serviceName
                     temp_workspace = string.replace(workspace, ':', '', 1)
@@ -541,11 +610,45 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
 
                 #Check if the service exists
                 serviceExists = False
-                serviceExists = isServicePresent(toServerName, str(toServerPort), toAdminUser, toAdminPass, simpleServiceName, folderName)
-                if serviceExists == False:
-                    pos = msdPath.find(serviceName) + len(serviceName) 
-                    inputFolderPath = msdPath[:pos]                    
+                serviceExistsOld = False
+                serviceExists = isServicePresent(toServerName, str(toServerPort), toAdminUser, toAdminPass, simpleServiceName, folderName, "")
 
+                pos = msdPath.find(serviceName) + len(serviceName) 
+                inputFolderPath = msdPath[:pos]
+
+                #If service exists and must be overwritten                
+                if serviceExists == True and overwrite == 'true':
+                    #Backup old service
+                    serviceURLforbackup = "/arcgis/admin/services/" + folderName + "/" + serviceName
+
+                    # This request only needs the token and the response formatting parameter
+                    tokenforbackup = gentoken(toServerName, toServerPort, toAdminUser, toAdminPass)
+                    paramsforbackup = urllib.urlencode({'token': tokenforbackup, 'f': 'json'})
+                    responseforbackup, dataforbackup = postToServer(toServerName, str(toServerPort), serviceURLforbackup, paramsforbackup)
+                    
+                    if (responseforbackup.status == 200) and assertJsonSuccess(dataforbackup):
+
+                        propInitialServiceforbackup = json.loads(dataforbackup)
+                        pathInitialforbackup = propInitialServiceforbackup["properties"]["filePath"]
+                        pathInitialforbackup = pathInitialforbackup.replace(':', '', 1)
+                        msdPathforbackup = pathInitialforbackup.replace('X', os.path.join(r'\\' + toServerName, 'x'), 1)
+                        posforbackup = msdPathforbackup.find(serviceName) + len(serviceName) 
+                        inputFolderPathforbackup = msdPathforbackup[:posforbackup]
+
+                        copyFrom = inputFolderPathforbackup                    
+                        copyTo = os.path.join(workFolder, folderName, serviceName)                    
+                        continuePublish1 = copy(copyFrom, copyTo)                        
+                        continuePublish2 = createZipFile(copyFrom, workFolder + "\\" + folderName + "\\" + serviceName + ".zip")
+                    
+                        if continuePublish1 == True and continuePublish2 == True:
+                            arcpy.AddMessage("     Step 0: Old service backup done succesfully.")
+                        else:
+                            arcpy.AddMessage("     Step 0: Error when backing up old service .")                                        
+
+                    serviceExistsOld = serviceExists
+                    serviceExists = False
+                 
+                if serviceExists == False:            
                     #The path of the folder that contains the service info
                     if folderName != "":
                         if not os.path.exists(workspace + folderName):
@@ -618,6 +721,8 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                                         serviceSuccesNumber = serviceSuccesNumber + 1
                                         writeTxtFile(True, content, serviceSuccesNumber, content1, workspace)
                                        
+                                        #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, '')
+
                                     except arcpy.ExecuteError:
                                         arcpy.AddWarning("%%%%%%%%%%%%%%%%%%     " + arcpy.GetMessages())
                                         arcpy.AddWarning("     Failed to publish.")
@@ -625,7 +730,9 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                                         content = "\n " + formatDate() + "\n Failed to publish. \n   - " + finalServiceName + "\n"
                                         serviceFailureNumber = serviceFailureNumber + 1
                                         writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                                         
+                                        
+                                        #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Failed to publish.')                                        
+                                            
                                     #Published successfully.
                                     arcpy.AddMessage("  ** Service '" + finalServiceName + "' published successfully.")
 
@@ -664,6 +771,7 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
 
                                     serviceFailureNumber = serviceFailureNumber + 1
                                     writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, dbcontent)
 
                             # if the sddraft analysis contained errors
                             else:
@@ -675,6 +783,9 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                                     content = "\n " + formatDate() + "\n Service Definition Draft could not be analyzed. \n   - " + finalServiceName + "\n"
                                     serviceFailureNumber = serviceFailureNumber + 1
                                     writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                                    
+                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service Definition Draft could not be analyzed.')
+
                                 else:
                                     arcpy.AddWarning("     Service could not be published because errors were found during analysis. ")                             
 
@@ -682,6 +793,8 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                                     serviceFailureNumber = serviceFailureNumber + 1
                                     writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
                                     
+                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service could not be published because errors were found during analysis.')
+                            
                         # MXD not found
                         else:                              
                             arcpy.AddWarning("     Service MXD not found.")
@@ -689,6 +802,8 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                             content = "\n " + formatDate() + "\n Service MXD not found.\n   - " + finalServiceName + "\n"
                             serviceFailureNumber = serviceFailureNumber + 1
                             writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                            
+                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service MXD not found.')
                             
                     # Service information folder already exists (can't be deleted)
                     else:
@@ -698,13 +813,17 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                             content = "\n " + formatDate() + "\n Service information folder already exists and can not be created.\n   - " + finalServiceName + "\n"
                             serviceFailureNumber = serviceFailureNumber + 1
                             writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-
+                            
+                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service information folder already exists and can not be created.')
+                            
                         else:
                             arcpy.AddWarning("     The source can not be copied because the path is extremely long.")
 
                             content = "\n " + formatDate() + "\n The source can not be copied because the path is extremely long.\n   - " + finalServiceName + "\n"
                             serviceFailureNumber = serviceFailureNumber + 1
                             writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                            
+                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'The source can not be copied because the path is extremely long.')                            
                             
                 # Service already is published
                 else:
@@ -714,6 +833,8 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                     serviceFailureNumber = serviceFailureNumber + 1
                     writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
                     
+                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service already exists in the server and can not be created.')
+
     number = numberOfServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceType)
 
     temp_workspace = string.replace(workspace,':','',1)
@@ -726,6 +847,9 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
     arcpy.AddMessage(" - Number of services not transfered to '" + toServerName + "': " + str(serviceFailureNumber))
     
     arcpy.AddMessage("\n - The migration backup is placed in: " + migration_backup)
+    
+    if serviceExistsOld == True and overwrite == 'true':
+         arcpy.AddMessage(" - Old service backup is placed in: " + copyTo)
         
     arcpy.AddMessage("***************************************************************************  ")
    
@@ -1100,18 +1224,23 @@ if __name__ == "__main__":
     toAdminUser = arcpy.GetParameterAsText(8)
     toAdminPass = arcpy.GetParameterAsText(9)
     newFolder = arcpy.GetParameterAsText(10)
-    sysTemp = arcpy.GetParameterAsText(11)  
-
-    #sysTemp = tempfile.gettempdir()
+    sysTemp = arcpy.GetParameterAsText(11)
+    overwrite = arcpy.GetParameterAsText(12)
+    backupPath = arcpy.GetParameterAsText(13)
+  
     if not os.path.exists(sysTemp):
         os.makedirs(sysTemp)
+
+    if not os.path.exists(backupPath):
+        os.makedirs(backupPath)        
         
     now = datetime.datetime.now()
     workspace = os.path.join(sysTemp, str(now.year) + str(now.month) + str(now.day) + '_' + str(now.hour) + str(now.minute) + str(now.second) + '_' + fromServerName + '_' + toServerName)
+    workFolder = os.path.join(backupPath, str(now.year) + str(now.month) + str(now.day) + '_' + str(now.hour) + str(now.minute) + str(now.second) + '_' + toServerName)
     
     if not os.path.exists(workspace): os.makedirs(workspace)
 
     if serviceType == "MapServer":
-        transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder)
+        transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder, overwrite, workFolder)
 
 
