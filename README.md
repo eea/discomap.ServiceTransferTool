@@ -3,8 +3,8 @@ Transfer tool
 This tool allows migrating services from one server to another. 
 	
 Environment requirements
-The tool is developped to run under Arcgis 10.2 (Python2.7)
-The ArcGIS services sources must be placed in a path according to the following structure: \\server_name\x\arcgisserver\...
+The tool is developped to run under Arcgis 10.4 (Python2.7)
+The ArcGIS services sources must be placed in a path according to the following structure: \\server_name\disk\arcgisserver\...
 The user that executes the tool or/and the user from ArcGIS Server that uses the geoprocessing service, should be able to access to each network path where the service’s sources are placed in order to copy them. Also needs permission to store in somewhere a copy of the services. 
 The server where the geoprocessing service is displayed or the one where the tool is executed requires space to store a copy of all the sources of the migrated services.
 
