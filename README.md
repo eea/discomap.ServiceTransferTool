@@ -3,7 +3,7 @@ Transfer tool
 This tool allows migrating services from one server to another. 
 	
 Environment requirements
-The tool is developped to run under 10.3.1 (Python2.7)
+The tool is developped to run under Arcgis 10.2 (Python2.7)
 The ArcGIS services sources must be placed in a path according to the following structure: \\server_name\x\arcgisserver\...
 The user that executes the tool or/and the user from ArcGIS Server that uses the geoprocessing service, should be able to access to each network path where the service’s sources are placed in order to copy them. Also needs permission to store in somewhere a copy of the services. 
 The server where the geoprocessing service is displayed or the one where the tool is executed requires space to store a copy of all the sources of the migrated services.
@@ -38,11 +38,18 @@ Administrative password.
 A destination folder different from the original/s one/s can be introduced.
 [12] sysTemp (string)
 A folder where the services sources are going to be stored.
+[13] (optional) Overwrite (boolean)
+If the service is found in the destination server in the same folder, the service can be overwritten.
+[14] backupTemp (string)
+If the service is overwritten the old service sources are stored in this folder.
 
-The script uses the username and the password to connect to the original and destination server with a generatetoken action. After accessing to the original server, all services are listed. When the user selects the services to migrate and fills all the parameters the process starts.
+
+The script uses the username and the password to connect to the original and destination server with a generate token action. After accessing to the original server, all services are listed. When the user selects the services to migrate and fills all the parameters the process starts.
 Firstly, a copy of the selected service's sources is made, this copy is placed in the sysTemp path. After that, all the service's properties are read and modified in the copy done in the sysTemp path. 
 The tool checks if in the destination server exists a folder with the same name as the original one, or with the name defined as a parameter. If not the folder is created. Once the folder is created the tool publish the service using the copied sources. 
+If the service exists in the destination server in the same designed folder, it is possible to allow overwritten it. If so a copy of the old service is created in the backup temp path.
 Is important to notice that if the service has special permission (cannot access to it everyone), also this permission is set in the new service. The procedure is: 
 -	In case the role exists in the destination server: Only the access permission is assigned to the service.
 -	In case the role does not exists in the destination server: The role is created with the same characteristics of the original one, the role privileges are assigned to the role and the users within that role are transferred.
 Note: When the users are copied from one server to another it is not possible to transfer the password of the user so is set by default.
+

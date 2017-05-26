@@ -6,7 +6,6 @@ import errno
 import string
 import datetime, time
 import xml.dom.minidom as DOM
-import pymssql
 import socket
 import tempfile
 import getpass
@@ -220,23 +219,25 @@ def createZipFile(folder_path, output_path):
     in the archive). Empty subfolders will be included in the archive
     as well.
     """
+
     parent_folder = os.path.dirname(folder_path)
-    
     # Retrieve the paths of the folder contents.
     contents = os.walk(folder_path)
     try:
-        zip_file = zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED)
+        zip_file = zipfile.ZipFile(output_path, 'w', allowZip64 = True)
         for root, folders, files in contents:
             # Include all subfolders, including empty ones.
             for folder_name in folders:
                 absolute_path = os.path.join(root, folder_name)
                 relative_path = absolute_path.replace(parent_folder + '\\','')
                 zip_file.write(absolute_path, relative_path)
+                #zipfile.ZipFile(absolute_path, relative_path, mode='w', allowZip64 = True)
                 
             for file_name in files:
                 absolute_path = os.path.join(root, file_name)
                 relative_path = absolute_path.replace(parent_folder + '\\','')
                 zip_file.write(absolute_path, relative_path)
+                #zipfile.ZipFile(absolute_path, relative_path, mode='w', allowZip64 = True)
 
 
         zip_file.close()
@@ -258,13 +259,20 @@ def createZipFile(folder_path, output_path):
         os.remove(output_path)
         return False
     
-    except:
-        arcpy.AddMessage('long')
-        zip_file.close()        
-        arcpy.AddMessage('     The source can not be copied because the path is extremely long.')
+    except Exception, e:
+        arcpy.AddMessage('     Failed: '+ str(e))
+        zip_file.close()
         os.remove(output_path)
         return False
-    
+
+def get_size(start_path):
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+    return total_size
+        
 
 def deleteInfo(src):
     
@@ -528,24 +536,6 @@ def createTxtFile(fileName, content):
     except IOError:
         pass
 
-    
-def writeInDatabase(fromServerName, toServerName, serviceType, finalService, initialService, user, sources, errorText):
-
-    #connect to SQL Server instance
-    conn = pymssql.connect(host='tetrasql.eea.dmz1', user='gis', password='tmggis', database='ArcGisStatistics')
-
-    #commits every transaction automatically and setup cursor
-    conn.autocommit(True)
-    cur = conn.cursor()
-    
-    try:        
-        cur.execute("INSERT INTO WebServicesMigration VALUES ('"+ fromServerName +"','"+ initialService +"','"+ toServerName +"','"+ finalService  +"','"+ serviceType +"','" + user + "','" + socket.gethostname() + "','" + sources + "', CURRENT_TIMESTAMP,'" + errorText + "')")
-        conn.commit()
-    except:
-        print "Could not INSERT"
-            
-    conn.close()
- 
   
 def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder,
                         overwrite, workFolder, token=None):
@@ -554,7 +544,9 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
     sources = ""
 
     workspace = workspace + "\\"
-    
+    serviceExists = False
+    serviceExistsOld = False
+                
     content1 = "\n *************************************************************************** \n           Publishing in Server: " + toServerName + " Port: " + toServerPort + " AdminUser: " + toAdminUser + "\n           " + formatDate() + "\n *************************************************************************** "
   
     # Getting services from tool validation creates a semicolon delimited list that needs to be broken up
@@ -588,7 +580,8 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
 
                 pathInitial = propInitialService["properties"]["filePath"]
                 pathInitial = pathInitial.replace(':', '', 1)
-                msdPath = pathInitial.replace('X', os.path.join(r'\\' + fromServerName, 'x'), 1)
+                #msdPath = pathInitial.replace('X', os.path.join(r'\\' + fromServerName, 'x'), 1)
+                msdPath = os.path.join(r'\\' + fromServerName, pathInitial)  
                 
                 if newFolder != "" : folderName = newFolder
                 else: folderName = os.path.split(service)[0]
@@ -601,16 +594,18 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                 if  folderName != 'root' or folderName != '':                           
                     finalServiceName = folderName + "//" + simpleServiceName + ".MapServer"
                     temp_workspace = string.replace(workspace, ':', '', 1)
-                    temp_workspace = string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1)
+                    #temp_workspace = string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1)
+                    temp_workspace = os.path.join(r'\\' + socket.gethostname(), temp_workspace)
+    
                     sources = os.path.join(temp_workspace, os.path.join(folderName, simpleServiceName + ".MapServer"))
                 else:
                     finalServiceName = serviceName
                     temp_workspace = string.replace(workspace, ':', '', 1)
-                    sources = os.path.join(string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1), serviceName)
+                    #sources = os.path.join(string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1), serviceName)
+                    sources = os.path.join(os.path.join(r'\\' + socket.gethostname(), temp_workspace), serviceName)
+                    
 
                 #Check if the service exists
-                serviceExists = False
-                serviceExistsOld = False
                 serviceExists = isServicePresent(toServerName, str(toServerPort), toAdminUser, toAdminPass, simpleServiceName, folderName, "")
 
                 pos = msdPath.find(serviceName) + len(serviceName) 
@@ -627,23 +622,26 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                     responseforbackup, dataforbackup = postToServer(toServerName, str(toServerPort), serviceURLforbackup, paramsforbackup)
                     
                     if (responseforbackup.status == 200) and assertJsonSuccess(dataforbackup):
-
                         propInitialServiceforbackup = json.loads(dataforbackup)
                         pathInitialforbackup = propInitialServiceforbackup["properties"]["filePath"]
                         pathInitialforbackup = pathInitialforbackup.replace(':', '', 1)
-                        msdPathforbackup = pathInitialforbackup.replace('X', os.path.join(r'\\' + toServerName, 'x'), 1)
+                        #msdPathforbackup = pathInitialforbackup.replace('X', os.path.join(r'\\' + toServerName, 'x'), 1)
+                        msdPathforbackup = os.path.join(r'\\' + toServerName, pathInitialforbackup)
                         posforbackup = msdPathforbackup.find(serviceName) + len(serviceName) 
                         inputFolderPathforbackup = msdPathforbackup[:posforbackup]
 
                         copyFrom = inputFolderPathforbackup                    
-                        copyTo = os.path.join(workFolder, folderName, serviceName)                    
-                        continuePublish1 = copy(copyFrom, copyTo)                        
-                        continuePublish2 = createZipFile(copyFrom, workFolder + "\\" + folderName + "\\" + serviceName + ".zip")
-                    
-                        if continuePublish1 == True and continuePublish2 == True:
-                            arcpy.AddMessage("     Step 0: Old service backup done succesfully.")
-                        else:
-                            arcpy.AddMessage("     Step 0: Error when backing up old service .")                                        
+                        copyTo = os.path.join(workFolder, folderName, serviceName)
+
+                        #Check that size is smaller than 3 Gb
+                        if (get_size(copyFrom)/(1024*1024)) < 1907:
+                            continuePublish1 = copy(copyFrom, copyTo)                        
+                            continuePublish2 = createZipFile(copyFrom, workFolder + "\\" + folderName + "\\" + serviceName + ".zip")
+                        
+                            if continuePublish1 == True and continuePublish2 == True:
+                                arcpy.AddMessage("     Step 0: Old service backup done succesfully.")
+                            else:
+                                arcpy.AddMessage("     Step 0: Error when backing up old service .")                                        
 
                     serviceExistsOld = serviceExists
                     serviceExists = False
@@ -655,176 +653,169 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                             os.makedirs(workspace + folderName)
                         serviceName = folderName + "\\" + serviceName
 
-                    #Copy service data
-                    continuePublish = copy(inputFolderPath, workspace + serviceName)
+                    #Check that size is smaller than 3 Gb
+                    if (get_size(inputFolderPath)/(1024*1024)) < 1907:
+                        #Copy service data
+                        continuePublish = copy(inputFolderPath, workspace + serviceName)
 
-                    #If the data copied ok
-                    if continuePublish == True:
-                        mxdExist = False
-                        #Check for MXD
-                        for root, dirs, files in os.walk(workspace + serviceName):
-                            for file in files:
-                                if file.endswith(".mxd"):
-                                     mxdFile = os.path.join(root, file)
-                                     mxdExist = True
-                                     break;
-                                            
-                        #If MXD exist
-                        if mxdExist == True:
-                        
-                            createFolder(toServerName, toServerPort, toAdminUser, toAdminPass, folderName, "")
+                        #If the data copied ok
+                        if continuePublish == True:
+                            mxdExist = False
+                            #Check for MXD
+                            for root, dirs, files in os.walk(workspace + serviceName):
+                                for file in files:
+                                    if file.endswith(".mxd"):
+                                         mxdFile = os.path.join(root, file)
+                                         mxdExist = True
+                                         break;
+                                                
+                            #If MXD exist
+                            if mxdExist == True:
+                            
+                                createFolder(toServerName, toServerPort, toAdminUser, toAdminPass, folderName, "")
 
-                            mapName = os.path.split(mxdFile)[1]
-                            pos2 = mapName.find(".mxd")
-                            sdname = mapName[:pos2]
+                                mapName = os.path.split(mxdFile)[1]
+                                pos2 = mapName.find(".mxd")
+                                sdname = mapName[:pos2]
 
-                            sddraft = workspace + serviceName + "\\" + sdname + '.sddraft'
-                            sd = workspace + serviceName + "\\" + sdname + '.sd'
+                                sddraft = workspace + serviceName + "\\" + sdname + '.sddraft'
+                                sd = workspace + serviceName + "\\" + sdname + '.sd'
 
-                            mapDoc = arcpy.mapping.MapDocument(mxdFile)
+                                mapDoc = arcpy.mapping.MapDocument(mxdFile)
 
-                            #Create a customized Service Definition Draft
-                            arcpy.AddMessage("     Step 1: Creating Service Definition Draft (.sddraft)")
-                            draftXml = CreateServiceDefinitionDraft(mapDoc, sddraft, simpleServiceName, con, folderName, propInitialService, workspace + serviceName)
+                                #Create a customized Service Definition Draft
+                                arcpy.AddMessage("     Step 1: Creating Service Definition Draft (.sddraft)")
+                                draftXml = CreateServiceDefinitionDraft(mapDoc, sddraft, simpleServiceName, con, folderName, propInitialService, workspace + serviceName)
 
-                            #Get the analysis result
-                            arcpy.AddMessage("     Step 2: Analyzing Service Definition Draft.")
+                                #Get the analysis result
+                                arcpy.AddMessage("     Step 2: Analyzing Service Definition Draft.")
 
-                            # Analyze the service definition draft
-                            analyseDraft = analyseServiceDraft(draftXml, service)
-       
+                                # Analyze the service definition draft
+                                analyseDraft = analyseServiceDraft(draftXml, service)
+                                
+                                # Stage and upload the service if the sddraft analysis did not contain errors
+                                if analyseDraft['errors'] == {}:                                
+                                    try:                                
+                                        #If SD exist is deleted
+                                        if os.path.isfile(sd): os.remove(sd)
 
-                            # Stage and upload the service if the sddraft analysis did not contain errors
-                            if analyseDraft['errors'] == {}:                                
-                                try:                                
-                                    #If SD exist is deleted
-                                    if os.path.isfile(sd): os.remove(sd)
-
-                                    # Execute StageService. This creates the service definition.
-                                    arcpy.AddMessage("     Step 3: Creating Service Definition (.sd)")
-                                    arcpy.StageService_server(draftXml, sd)
-
-                                    try:
-                                        arcpy.AddMessage("     Step 4: Uploading Service Definition.")
-                                        arcpy.UploadServiceDefinition_server(sd, con)
+                                        # Execute StageService. This creates the service definition.
+                                        arcpy.AddMessage("     Step 3: Creating Service Definition (.sd)")
+                                        arcpy.StageService_server(draftXml, sd)
 
                                         try:
-                                            arcpy.AddMessage("     Step 5: Setting permissions.")
-                                            setPermission(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, os.path.split(service)[0], toServerName, toServerPort, toAdminUser, toAdminPass, folderName, simpleServiceName, serviceType)
-                                            content = "\n " + formatDate() + "\n Published successfully. \n   - " + finalServiceName + "\n        --> " + mxdFile + "\n        --> " + sd + "\n"
-                                            
-                                        except ValueError, value:
-                                            arcpy.AddMessage("          Failed to assign permission. Please assign manually: \n               - " + str(value))
-                                            content = "\n " + formatDate() + "\n Published successfully. \n   - " + finalServiceName + "\n        --> " + mxdFile + "\n        --> " + sd + "\n"
-                                            content  = content + "\n Failed to assign permission. \n   - " + str(value) + "\n"
+                                            arcpy.AddMessage("     Step 4: Uploading Service Definition.")
+                                            arcpy.UploadServiceDefinition_server(sd, con)
 
-                                        serviceSuccesNumber = serviceSuccesNumber + 1
-                                        writeTxtFile(True, content, serviceSuccesNumber, content1, workspace)
-                                       
-                                        #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, '')
+                                            try:
+                                                arcpy.AddMessage("     Step 5: Setting permissions.")
+                                                setPermission(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, os.path.split(service)[0], toServerName, toServerPort, toAdminUser, toAdminPass, folderName, simpleServiceName, serviceType)
+                                                content = "\n " + formatDate() + "\n Published successfully. \n   - " + finalServiceName + "\n        --> " + mxdFile + "\n        --> " + sd + "\n"
+                                                
+                                            except ValueError, value:
+                                                arcpy.AddMessage("          Failed to assign permission. Please assign manually: \n               - " + str(value))
+                                                content = "\n " + formatDate() + "\n Published successfully. \n   - " + finalServiceName + "\n        --> " + mxdFile + "\n        --> " + sd + "\n"
+                                                content  = content + "\n Failed to assign permission. \n   - " + str(value) + "\n"
 
+                                            serviceSuccesNumber = serviceSuccesNumber + 1
+                                            writeTxtFile(True, content, serviceSuccesNumber, content1, workspace)
+
+                                        except arcpy.ExecuteError:
+                                            arcpy.AddWarning("%%%%%%%%%%%%%%%%%%     " + arcpy.GetMessages())
+                                            arcpy.AddWarning("     Failed to publish.")
+
+                                            content = "\n " + formatDate() + "\n Failed to publish. \n   - " + finalServiceName + "\n"
+                                            serviceFailureNumber = serviceFailureNumber + 1
+                                            writeTxtFile(False, content, serviceFailureNumber, content1, workspace)                                      
+                                                
+                                        #Published successfully.
+                                        arcpy.AddMessage("  ** Service '" + finalServiceName + "' published successfully.")
+
+                                    # SD can't be created
                                     except arcpy.ExecuteError:
-                                        arcpy.AddWarning("%%%%%%%%%%%%%%%%%%     " + arcpy.GetMessages())
-                                        arcpy.AddWarning("     Failed to publish.")
+                                        serviceTypeD = ""
+                                        serverD = ""
+                                        serviceD = ""
+                                        databaseD = ""
+                                        strconex = ""
+                                        
+                                        for lyr in arcpy.mapping.ListLayers(mapDoc):
+                                            if lyr.supports("SERVICEPROPERTIES"):
+                                                #Para no repetir las fuentes
+                                                if serviceTypeD != lyr.serviceProperties["ServiceType"] and serverD != lyr.serviceProperties["Server"] and serviceD != lyr.serviceProperties["Server"] and databaseD != lyr.serviceProperties["Database"]:
+                                                    serviceTypeD = lyr.serviceProperties["ServiceType"]
+                                                    serverD = lyr.serviceProperties["Server"]
+                                                    serviceD = lyr.serviceProperties["Service"]
+                                                    databaseD = lyr.serviceProperties["Database"]
+                                                    strconex = "          * ServiceType: '" + serviceTypeD + "', Server: '" + serverD + "', Service: '" + serviceD + "', Database: '" + databaseD + "'."
+                                        del mapDoc
+                                        del serviceTypeD
+                                        del serverD
+                                        del serviceD
+                                        del databaseD
+                                        
+                                        if strconex != "":
+                                            arcpy.AddWarning("     Consolidating the data failed. Please register first the database in the Server DataStore: ")
+                                            arcpy.AddWarning(strconex)
+                                            content = "\n " + formatDate() + "\n Consolidating the data failed.\n   - " + finalServiceName + "\n     Please register first the database in the Server DataStore:\n" + strconex + "\n"
+                                            dbcontent = 'Consolidating the data failed. Please register first the database in the Server DataStore. '
+                                        else:
+                                            arcpy.AddWarning("     Consolidating the data failed. Please check datasources.")
+                                            content = "\n " + formatDate() + "\n Consolidating the data failed. Please check datasources. \n   - " + finalServiceName + "\n"
+                                            dbcontent = 'Consolidating the data failed. Please check datasources.'
 
-                                        content = "\n " + formatDate() + "\n Failed to publish. \n   - " + finalServiceName + "\n"
+                                        serviceFailureNumber = serviceFailureNumber + 1
+                                        writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+
+                                # if the sddraft analysis contained errors
+                                else:
+                                    #Service Definition Draft could not be analyzed
+                                    if analyseDraft['errors'] == "NO":
+                                        
+                                        arcpy.AddWarning("     Service Definition Draft could not be analyzed.")
+                                        
+                                        content = "\n " + formatDate() + "\n Service Definition Draft could not be analyzed.\n"
                                         serviceFailureNumber = serviceFailureNumber + 1
                                         writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
                                         
-                                        #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Failed to publish.')                                        
-                                            
-                                    #Published successfully.
-                                    arcpy.AddMessage("  ** Service '" + finalServiceName + "' published successfully.")
-
-                                # SD can't be created
-                                except arcpy.ExecuteError:
-                                    serviceTypeD = ""
-                                    serverD = ""
-                                    serviceD = ""
-                                    databaseD = ""
-                                    strconex = ""
-                                    
-                                    for lyr in arcpy.mapping.ListLayers(mapDoc):
-                                        if lyr.supports("SERVICEPROPERTIES"):
-                                            #Para no repetir las fuentes
-                                            if serviceTypeD != lyr.serviceProperties["ServiceType"] and serverD != lyr.serviceProperties["Server"] and serviceD != lyr.serviceProperties["Server"] and databaseD != lyr.serviceProperties["Database"]:
-                                                serviceTypeD = lyr.serviceProperties["ServiceType"]
-                                                serverD = lyr.serviceProperties["Server"]
-                                                serviceD = lyr.serviceProperties["Service"]
-                                                databaseD = lyr.serviceProperties["Database"]
-                                                strconex = "          * ServiceType: '" + serviceTypeD + "', Server: '" + serverD + "', Service: '" + serviceD + "', Database: '" + databaseD + "'."
-                                    del mapDoc
-                                    del serviceTypeD
-                                    del serverD
-                                    del serviceD
-                                    del databaseD
-                                    
-                                    if strconex != "":
-                                        arcpy.AddWarning("     Consolidating the data failed. Please register first the database in the Server DataStore: ")
-                                        arcpy.AddWarning(strconex)
-                                        content = "\n " + formatDate() + "\n Consolidating the data failed.\n   - " + finalServiceName + "\n     Please register first the database in the Server DataStore:\n" + strconex + "\n"
-                                        dbcontent = 'Consolidating the data failed. Please register first the database in the Server DataStore. '
                                     else:
-                                        arcpy.AddWarning("     Consolidating the data failed. Please check datasources.")
-                                        content = "\n " + formatDate() + "\n Consolidating the data failed. Please check datasources. \n   - " + finalServiceName + "\n"
-                                        dbcontent = 'Consolidating the data failed. Please check datasources.'
-
-                                    serviceFailureNumber = serviceFailureNumber + 1
-                                    writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, dbcontent)
-
-                            # if the sddraft analysis contained errors
-                            else:
-                                #Service Definition Draft could not be analyzed
-                                if analyseDraft['errors'] == "NO":
-                                    
-                                    arcpy.AddWarning("     Service Definition Draft could not be analyzed.")
-                                    
-                                    content = "\n " + formatDate() + "\n Service Definition Draft could not be analyzed. \n   - " + finalServiceName + "\n"
-                                    serviceFailureNumber = serviceFailureNumber + 1
-                                    writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                                    
-                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service Definition Draft could not be analyzed.')
-
-                                else:
-                                    arcpy.AddWarning("     Service could not be published because errors were found during analysis. ")                             
-
-                                    content = "\n " + formatDate() + "\n Service could not be published because errors were found during analysis. \n " + str(analyseDraft['errors']) + "\n   - " + finalServiceName + "\n"
-                                    serviceFailureNumber = serviceFailureNumber + 1
-                                    writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                                    
-                                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service could not be published because errors were found during analysis.')
-                            
-                        # MXD not found
-                        else:                              
-                            arcpy.AddWarning("     Service MXD not found.")
-                            
-                            content = "\n " + formatDate() + "\n Service MXD not found.\n   - " + finalServiceName + "\n"
-                            serviceFailureNumber = serviceFailureNumber + 1
-                            writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                            
-                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service MXD not found.')
-                            
-                    # Service information folder already exists (can't be deleted)
-                    else:
-                        if longErrorGlobal == False:                        
-                            arcpy.AddWarning("     Service information folder already exists and can not be created.")
-
-                            content = "\n " + formatDate() + "\n Service information folder already exists and can not be created.\n   - " + finalServiceName + "\n"
-                            serviceFailureNumber = serviceFailureNumber + 1
-                            writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                            
-                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service information folder already exists and can not be created.')
-                            
+                                        arcpy.AddWarning("     Service could not be published because errors were found during analysis. \n" + analyseDraft['errors'])                             
+                                        content = "\n " + formatDate() + "\n Service could not be published because errors were found during analysis. \n " + analyseDraft['errors'] + "\n  "
+                                        serviceFailureNumber = serviceFailureNumber + 1
+                                        writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                                        
+                            # MXD not found
+                            else:                              
+                                arcpy.AddWarning("     Service MXD not found.")
+                                
+                                content = "\n " + formatDate() + "\n Service MXD not found.\n   - " + finalServiceName + "\n"
+                                serviceFailureNumber = serviceFailureNumber + 1
+                                writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                                
+                        # Service information folder already exists (can't be deleted)
                         else:
-                            arcpy.AddWarning("     The source can not be copied because the path is extremely long.")
+                            if longErrorGlobal == False:                        
+                                arcpy.AddWarning("     Service information folder already exists and can not be created.")
 
-                            content = "\n " + formatDate() + "\n The source can not be copied because the path is extremely long.\n   - " + finalServiceName + "\n"
-                            serviceFailureNumber = serviceFailureNumber + 1
-                            writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
-                            
-                            #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'The source can not be copied because the path is extremely long.')                            
-                            
+                                content = "\n " + formatDate() + "\n Service information folder already exists and can not be created.\n   - " + finalServiceName + "\n"
+                                serviceFailureNumber = serviceFailureNumber + 1
+                                writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                                
+                            else:
+                                arcpy.AddWarning("     The source can not be copied because the path is extremely long.")
+
+                                content = "\n " + formatDate() + "\n The source can not be copied because the path is extremely long.\n   - " + finalServiceName + "\n"
+                                serviceFailureNumber = serviceFailureNumber + 1
+                                writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+
+                    else:
+                        arcpy.AddWarning("     Service size is more than 2 Gb, can not be transfered. Please use the toolbox.")
+
+                        content = "\n " + formatDate() + "\n Service size is more than 2 Gb, can not be transfered. Please use the toolbox.\n   - " + str(service) + "\n"
+                        serviceFailureNumber = serviceFailureNumber + 1
+                        writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
+                        
+                                
                 # Service already is published
                 else:
                     arcpy.AddWarning("     Service already exists in the server and can not be created.")
@@ -833,12 +824,11 @@ def transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdmin
                     serviceFailureNumber = serviceFailureNumber + 1
                     writeTxtFile(False, content, serviceFailureNumber, content1, workspace)
                     
-                    #writeInDatabase(fromServerName, toServerName, serviceType, finalServiceName, service, user, sources, 'Service already exists in the server and can not be created.')
-
     number = numberOfServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceType)
 
     temp_workspace = string.replace(workspace,':','',1)
-    migration_backup = string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1)
+    #migration_backup = string.replace(temp_workspace, 'X', os.path.join(r'\\' + socket.gethostname(), 'x'), 1)
+    migration_backup = os.path.join(r'\\' + socket.gethostname(), temp_workspace)
     
     arcpy.AddMessage("\n***************************************************************************  ")
     arcpy.AddMessage(" - Number of services in '" + fromServerName + "': " + str(number))
@@ -1183,34 +1173,40 @@ def analyseServiceDraft(draftXml, service):
 
         # Print errors, warnings, and messages returned from the analysis
         count = 0 
-        mess = "     The following information was returned during analysis of the MXD: "
-        for key in ('messages', 'warnings', 'errors'):
-            mess = mess + "\n      " + key.upper() + ":"
-            vars = analysis[key]
-            mess2 = ""
-            for ((message, code), layerlist) in vars.iteritems():
-                mess2 = mess2 + "\n      - " + message + " (CODE %i)" % code
+        mess = "     The following information was obtained during the MXD analysis: "
+        
+        mess = mess + "\n     Errors:"
+        vars = analysis['errors']
+        mess2 = ""
+        layerList = None
+            
+        for ((message, code), layerlist) in vars.iteritems():
+            mess2 = mess2 + "\n      - " + message + " (CODE %i)" % code
+       
+            if layerList is not None:
                 mess2 = mess2 + " applies to:"
                 
-                for layer in layerlist:
-                    count = count + 1
-                    mess2 = mess2 + "\n            " + str(count) + " : "+ layer.name
+            for layer in layerlist:
+                count = count + 1
+                mess2 = mess2 + "\n            " + str(count) + " : "+ layer.name
 
-            mess = mess + mess2
-            if analysis['errors'] != {}:
-                analysis['errors'] = mess
-                arcpy.AddMessage(mess)
+        mess = mess + mess2.encode("utf-8")
+            
+        if analysis['errors'] != {}:
+            analysis['errors'] = mess
                 
-            return analysis
+        return analysis
         
     # if the sddraft analysis fails
     except:
+        arcpy.AddMessage("3")
         #Service Definition Draft could not be analyzed
         analysis['errors'] = "NO"
         return analysis
-
+        
    
 if __name__ == "__main__":
+
 
     # Gather inputs    
     fromServerName = arcpy.GetParameterAsText(0)
@@ -1227,7 +1223,9 @@ if __name__ == "__main__":
     sysTemp = arcpy.GetParameterAsText(11)
     overwrite = arcpy.GetParameterAsText(12)
     backupPath = arcpy.GetParameterAsText(13)
-  
+
+    
+
     if not os.path.exists(sysTemp):
         os.makedirs(sysTemp)
 
@@ -1242,5 +1240,3 @@ if __name__ == "__main__":
 
     if serviceType == "MapServer":
         transferMapServices(fromServerName, fromServerPort, fromAdminUser, fromAdminPass, serviceList, toServerName, toServerPort, toAdminUser, toAdminPass, serviceType, workspace, newFolder, overwrite, workFolder)
-
-
